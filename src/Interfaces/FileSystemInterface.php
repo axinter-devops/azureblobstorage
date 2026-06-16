@@ -5,9 +5,12 @@ namespace AxInter\AzureBlobStorage\Interfaces;
 interface FileSystemInterface
 {
     public function write(string $path, string $contents): bool;
+    public function push(string $path, string $contents): bool;
     public function get(string $path): ?string;
+    public function read(string $path): ?string;
     public function delete(string $path): bool;
     public function exists(string $path): bool;
+    public function fileExists(string $path): bool;
     public function list(string $prefix = ''): array;
     public function copy(string $source, string $destination): bool;
     public function move(string $source, string $destination): bool;

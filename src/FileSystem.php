@@ -1,6 +1,6 @@
 <?php
 
-namespace Axinter\AzureBlobStorage;
+namespace AxInter\AzureBlobStorage;
 
 use AxInter\AzureBlobStorage\Exceptions\AzureBlobStorageException;
 use AxInter\AzureBlobStorage\Exceptions\BlobNotFoundException;
@@ -259,8 +259,28 @@ class FileSystem implements FileSystemInterface
         }
 
         try {
-            $contents = stream_get_contents($resource);
-            return $this->write($path, $contents);
+            if ($this->exists($path)) {
+                $timestamp = time();
+                $versionPath = ".versions/{$path}/" . $timestamp;
+
+                try {
+                    $this->copy($path, $versionPath);
+                } catch (\Exception $e) {
+                }
+            }
+
+            $url = "{$this->container}/{$path}";
+
+            $this->client->put($url, [
+                'headers' => [
+                    'x-ms-date' => gmdate('D, d M Y H:i:s T'),
+                    'x-ms-version' => '2021-08-06',
+                    'x-ms-blob-type' => 'BlockBlob',
+                ],
+                'body' => $resource,
+            ]);
+
+            return true;
         } catch (\Exception $e) {
             throw new AzureBlobStorageException("Failed to write stream: {$e->getMessage()}", 0, $e);
         }
@@ -508,15 +528,25 @@ class FileSystem implements FileSystemInterface
     public function restoreVersion(string $path, string $versionId): bool
     {
         try {
-            // For custom versioning: Restore is same as promote
-            // Get the version content and write it (which creates a new version)
-            $content = $this->getVersion($path, $versionId);
+            if ($versionId === 'current') {
+                return true;
+            }
 
-            if ($content === null) {
+            $versionPath = ".versions/{$path}/{$versionId}";
+            if (!$this->exists($versionPath)) {
                 return false;
             }
 
-            return $this->write($path, $content);
+            if ($this->exists($path)) {
+                $timestamp = time();
+                $currentVersionPath = ".versions/{$path}/" . $timestamp;
+                try {
+                    $this->copy($path, $currentVersionPath);
+                } catch (\Exception $e) {
+                }
+            }
+
+            return $this->copy($versionPath, $path);
         } catch (\Exception $e) {
             return false;
         }
@@ -524,19 +554,7 @@ class FileSystem implements FileSystemInterface
 
     public function promoteVersion(string $path, string $versionId): bool
     {
-        try {
-            // For custom versioning: Promote is same as restore
-            // Get the version content and write it (which creates a new version)
-            $content = $this->getVersion($path, $versionId);
-
-            if ($content === null) {
-                return false;
-            }
-
-            return $this->write($path, $content);
-        } catch (\Exception $e) {
-            return false;
-        }
+        return $this->restoreVersion($path, $versionId);
     }
 
     private function getStandardHeaders(): array
@@ -545,72 +563,5 @@ class FileSystem implements FileSystemInterface
             'x-ms-date' => gmdate('D, d M Y H:i:s T'),
             'x-ms-version' => '2021-08-06',
         ];
-    }
-
-    private function getAuthHeaders(string $method, string $url, array $additionalHeaders = [], array $query = []): array
-    {
-        $date = gmdate('D, d M Y H:i:s T');
-        $headers = array_merge([
-            'x-ms-date' => $date,
-            'x-ms-version' => '2021-08-06',
-        ], $additionalHeaders);
-
-        $canonicalizedHeaders = $this->buildCanonicalizedHeaders($headers);
-        $canonicalizedResource = $this->buildCanonicalizedResource($url, $query);
-
-        // Get Content-Length from headers (will be empty string if not set)
-        $contentLength = $headers['Content-Length'] ?? '';
-        // Azure requires empty string if Content-Length is 0
-        if ($contentLength === '0' || $contentLength === 0) {
-            $contentLength = '';
-        }
-        $contentType = $headers['Content-Type'] ?? '';
-
-        $stringToSign = implode("\n", [
-            $method,
-            '',
-            '',
-            $contentLength,
-            '',
-            $contentType,
-            '',
-            '',
-            '',
-            '',
-            '',
-            '',
-            $canonicalizedHeaders,
-            $canonicalizedResource,
-        ]);
-
-        $signature = base64_encode(hash_hmac('sha256', $stringToSign, base64_decode($this->config->getAccountKey()), true));
-
-    }
-
-    private function buildCanonicalizedHeaders(array $headers): string
-    {
-        $canonicalized = [];
-        foreach ($headers as $key => $value) {
-            $key = strtolower($key);
-            if (str_starts_with($key, 'x-ms-')) {
-                $canonicalized[$key] = "$key:$value";
-            }
-        }
-        ksort($canonicalized);
-        return implode("\n", $canonicalized);
-    }
-
-    private function buildCanonicalizedResource(string $url, array $query = []): string
-    {
-        $resource = "/{$this->config->getAccountName()}/{$url}";
-
-        if (!empty($query)) {
-            ksort($query);
-            foreach ($query as $key => $value) {
-                $resource .= "\n" . strtolower($key) . ':' . $value;
-            }
-        }
-
-        return $resource;
     }
 }
